@@ -1,5 +1,6 @@
 import streamlit as st
 import datetime
+from typing import Union
 from constants import (
     RESUME_MAX_TOKENS, 
     JOB_DESC_MAX_TOKENS, 
@@ -39,7 +40,7 @@ def initialize_tokenizer():
     import tiktoken
     return tiktoken.encoding_for_model(MODEL_NAME)
 
-def truncate_text_to_tokens(text: str, max_tokens: int, tokenizer) -> tuple[str, int]:
+def truncate_text_to_tokens(text: str, max_tokens: int, tokenizer) -> tuple:
     """Truncate text to a maximum number of tokens"""
     tokens = tokenizer.encode(text)
     if len(tokens) <= max_tokens:
@@ -71,7 +72,7 @@ def format_token_info(text: str, max_tokens: int, text_type: str) -> str:
     
     return truncated_text
 
-def get_generic_personalization_form(placeholders: list[str]) -> dict[str, str] | None:
+def get_generic_personalization_form(placeholders: list) -> Union[dict, None]:
     """Display a generic form for any placeholders found in the AI response"""
     st.subheader("👤 Personalize Your Cover Letter")
     st.info(f"Please fill in the following {len(placeholders)} fields to personalize your cover letter.")

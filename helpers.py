@@ -1,5 +1,6 @@
 import streamlit as st
 import openai
+import os
 from typing import Optional, Tuple
 from constants import (
     MODEL_NAME, 
@@ -12,7 +13,7 @@ from utils import count_tokens
 
 def check_openai_api_key() -> bool:
     """Check if OpenAI API key is available."""
-    api_key = st.secrets.get("OPENAI_API_KEY") or st.session_state.get("openai_api_key")
+    api_key = os.getenv("OPENAI_API_KEY")
     if not api_key:
         st.error(ERROR_MESSAGES["no_api_key"])
         st.info(ERROR_MESSAGES["api_key_info"])
@@ -92,7 +93,7 @@ def generate_cover_letter_with_cache(resume_text: str, job_description: str, con
         prompt = generate_cover_letter_prompt(resume_text, job_description)
         
         # Make API call
-        api_key = st.secrets.get("OPENAI_API_KEY") or st.session_state.get("openai_api_key")
+        api_key = os.getenv("OPENAI_API_KEY")
         client = openai.OpenAI(api_key=api_key)
         
         response = client.chat.completions.create(

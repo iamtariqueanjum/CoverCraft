@@ -14,8 +14,8 @@ JOB_DESC_TEXT_AREA_HEIGHT = 200  # Height for job description display
 
 # File Configuration
 SUPPORTED_FILE_TYPES = ["pdf"]
-COVER_LETTER_FILENAME = "personalized_cover_letter.csv"
-COVER_LETTER_MIME_TYPE = "text/csv"
+COVER_LETTER_FILENAME = "personalized_cover_letter.docx"
+COVER_LETTER_MIME_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 
 # Error Messages
 ERROR_MESSAGES = {

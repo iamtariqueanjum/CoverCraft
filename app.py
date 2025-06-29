@@ -26,7 +26,7 @@ from utils import (
     validate_file_type,
     format_token_count,
     validate_required_fields,
-    convert_cover_letter_to_csv
+    convert_cover_letter_to_docx
 )
 from helpers import (
     check_openai_api_key,
@@ -297,13 +297,13 @@ def main():
                 st.subheader("🎉 Your Personalized Cover Letter")
                 st.markdown(personalized_letter)
                 
-                # Convert to CSV format for download
-                csv_data = convert_cover_letter_to_csv(personalized_letter, personal_info)
+                # Convert to Word document format for download
+                docx_data = convert_cover_letter_to_docx(personalized_letter, personal_info)
                 
                 # Add download button
                 st.download_button(
-                    label="📥 Download Personalized Cover Letter (CSV)",
-                    data=csv_data,
+                    label="📥 Download Personalized Cover Letter (DOCX)",
+                    data=docx_data,
                     file_name=COVER_LETTER_FILENAME,
                     mime=COVER_LETTER_MIME_TYPE
                 )

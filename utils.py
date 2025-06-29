@@ -114,30 +114,45 @@ def validate_required_fields(filled_values: Dict[str, str], required_placeholder
     
     return len(empty_fields) == 0, empty_fields
 
-def convert_cover_letter_to_csv(cover_letter: str, personal_info: Dict[str, str]) -> str:
-    """Convert cover letter and personal info to CSV format."""
-    import csv
+def convert_cover_letter_to_docx(cover_letter: str, personal_info: Dict[str, str]) -> bytes:
+    """Convert cover letter and personal info to Word document format."""
+    from docx import Document
+    from docx.shared import Inches
+    from docx.enum.text import WD_ALIGN_PARAGRAPH
     import io
     
-    # Create CSV content
-    output = io.StringIO()
-    writer = csv.writer(output)
+    # Create a new Word document
+    doc = Document()
     
-    # Add headers
-    writer.writerow(['Field', 'Value'])
+    # Add title
+    title = doc.add_heading('Personalized Cover Letter', 0)
+    title.alignment = WD_ALIGN_PARAGRAPH.CENTER
     
-    # Add personal information
+    # Add personal information section
+    doc.add_heading('Personal Information', level=1)
     for placeholder, value in personal_info.items():
-        writer.writerow([f'Personal Info - {placeholder}', value])
+        p = doc.add_paragraph()
+        p.add_run(f'{placeholder}: ').bold = True
+        p.add_run(value)
     
     # Add separator
-    writer.writerow([])
-    writer.writerow(['Cover Letter Content'])
+    doc.add_paragraph()
     
-    # Add cover letter content (split by lines to handle line breaks)
-    lines = cover_letter.split('\n')
-    for line in lines:
-        if line.strip():  # Only add non-empty lines
-            writer.writerow([line])
+    # Add cover letter content
+    doc.add_heading('Cover Letter Content', level=1)
     
-    return output.getvalue() 
+    # Split cover letter into paragraphs and add them
+    paragraphs = cover_letter.split('\n\n')
+    for paragraph in paragraphs:
+        if paragraph.strip():  # Only add non-empty paragraphs
+            # Clean up the paragraph (remove extra whitespace)
+            clean_paragraph = paragraph.strip()
+            if clean_paragraph:
+                doc.add_paragraph(clean_paragraph)
+    
+    # Save to bytes buffer
+    buffer = io.BytesIO()
+    doc.save(buffer)
+    buffer.seek(0)
+    
+    return buffer.getvalue() 

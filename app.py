@@ -3,6 +3,8 @@ import streamlit as st
 from openai import OpenAI
 import pdfplumber
 import tiktoken
+import re
+import datetime
 
 # Token limits configuration - can be easily modified here
 RESUME_MAX_TOKENS = 8000  # 5K-10K range as requested
@@ -16,7 +18,7 @@ def initialize_openai_client():
     return client
 
 def initialize_tokenizer():
-# Initialize tokenizer
+    # Initialize tokenizer
     encoding = tiktoken.encoding_for_model(MODEL_NAME)
     return encoding
 
@@ -36,7 +38,7 @@ def extract_text_from_pdf(pdf_file):
         return text.strip()
     except Exception as e:
         st.error(f"Error reading PDF: {str(e)}")
-        return ""
+        return "Error in extracting text from PDF"
 
 def truncate_text_to_tokens(text, max_tokens, tokenizer):
     """Truncate text to a maximum number of tokens"""
@@ -70,74 +72,121 @@ def format_token_info(text, max_tokens, text_type):
     
     return truncated_text
 
-def generate_prompt_based_on_resume(resume):
+def generate_cover_letter_prompt(job_description, resume_text):
+    """Abstract method to generate the prompt for cover letter generation"""
     prompt = f"""
-    You are a helpful assistant that generates cover letters for job applications.
-    You are given a resume.
-    You need to generate a prompt for the job description based on the resume.
-    The prompt should be in the same language as the job description.
-    The prompt should be 1-2 paragraphs long.
-    The prompt should be formatted in markdown.
+    Write a professional cover letter for a job application. Use the following information:
+    
+    Resume: {resume_text}
+    Job Description: {job_description}
+    
+    Requirements:
+    1. Write a professional cover letter in business letter format
+    2. Use placeholders in square brackets [] for personal information that needs to be filled later
+    3. Make the content relevant to the resume and job description
+    4. Keep it professional and well-structured
+    5. Include proper business letter formatting with header and signature
+    6. Use any placeholders you think are appropriate for personalization
     """
     return prompt
 
-def generate_mock_cover_letter(job_description, resume):
-    """Generate a mock cover letter when OpenAI API is not available"""
-    return f"""
-# Professional Cover Letter
-
-Dear Hiring Manager,
-
-I am writing to express my strong interest in the position you have available. With my background and experience, I believe I would be an excellent fit for your team.
-
-Based on the job description you provided, I understand you are looking for a candidate who can contribute effectively to your organization. My experience aligns well with your requirements, and I am excited about the opportunity to bring my skills and enthusiasm to your company.
-
-I am particularly drawn to this role because it offers the chance to work on challenging projects while contributing to meaningful outcomes. I am confident that my background, combined with my strong work ethic and dedication to excellence, would make me a valuable addition to your team.
-
-Thank you for considering my application. I look forward to the opportunity to discuss how my skills and experience can benefit your organization.
-
-Sincerely,
-[Your Name]
-
----
-*This is a mock cover letter generated for demonstration purposes. For a personalized cover letter, please ensure your OpenAI API key is properly configured and has sufficient credits.*
-"""
-
-def generate_cover_letter(job_description, resume):
-    prompt = generate_prompt_based_on_resume(resume)
+def generate_ai_cover_letter(job_description, resume_text):
+    """Generate AI cover letter with placeholders for personalization"""
     client = initialize_openai_client()
+    
+    # Use the abstract prompt method
+    prompt = generate_cover_letter_prompt(job_description, resume_text)
+    
     try:
         response = client.chat.completions.create(
             model=MODEL_NAME,
             messages=[
-                {"role": "system", "content": "You are a professional cover letter writer."},
-                {"role": "user", "content": f"Resume: {resume}\n\nJob Description: {job_description}\n\nPlease write a professional cover letter based on the resume and job description."}
+                {"role": "system", "content": "You are a professional cover letter writer. Use placeholders in square brackets for any personal information that should be customized."},
+                {"role": "user", "content": prompt}
             ],
-            max_tokens=1000
+            max_tokens=1500
         )
         return response.choices[0].message.content
     except Exception as e:
-        error_msg = str(e)
-        st.warning("⚠️ OpenAI API Error: " + error_msg)
-        st.info("💡 Generating a mock cover letter instead. To use AI-generated cover letters, please check your OpenAI billing status.")
-        return generate_mock_cover_letter(job_description, resume)
+        st.error(f"❌ OpenAI API Error: {str(e)}")
+        return None
+
+def extract_placeholders_from_text(text):
+    """Extract all placeholders in square brackets from the generated cover letter"""
+    placeholder_pattern = r'\[([^\]]+)\]'
+    placeholders = re.findall(placeholder_pattern, text)
+    return list(set(placeholders))  # Remove duplicates
+
+def get_generic_personalization_form(placeholders):
+    """Display a generic form for any placeholders found in the AI response"""
+    st.subheader("👤 Personalize Your Cover Letter")
+    st.info(f"Please fill in the following {len(placeholders)} fields to personalize your cover letter.")
+    
+    personal_info = {}
+    
+    with st.form("personalization_form"):
+        # Create form fields dynamically based on extracted placeholders
+        for i, placeholder in enumerate(placeholders):
+            # Determine input type based on placeholder content
+            if any(keyword in placeholder.lower() for keyword in ['email', 'mail']):
+                value = st.text_input(f"{placeholder}", placeholder="example@email.com")
+            elif any(keyword in placeholder.lower() for keyword in ['phone', 'mobile', 'tel']):
+                value = st.text_input(f"{placeholder}", placeholder="(123) 456-7890")
+            elif any(keyword in placeholder.lower() for keyword in ['address', 'street']):
+                value = st.text_area(f"{placeholder}", placeholder="123 Main Street", height=60)
+            elif any(keyword in placeholder.lower() for keyword in ['date']):
+                # Auto-fill current date
+                value = datetime.datetime.now().strftime("%B %d, %Y")
+                st.text_input(f"{placeholder}", value=value, disabled=True)
+            elif any(keyword in placeholder.lower() for keyword in ['name']):
+                value = st.text_input(f"{placeholder}", placeholder="John Doe")
+            else:
+                # Generic text input for unknown placeholders
+                value = st.text_input(f"{placeholder}", placeholder="Enter value")
+            
+            personal_info[placeholder] = value
+        
+        submitted = st.form_submit_button("✅ Personalize Cover Letter")
+        
+        if submitted:
+            # Validate that all fields are filled
+            empty_fields = [placeholder for placeholder, value in personal_info.items() if not value.strip()]
+            if empty_fields:
+                st.error(f"❌ Please fill in all fields: {', '.join(empty_fields)}")
+                return None
+            else:
+                st.success("✅ Personal information saved successfully!")
+                return personal_info
+    
+    return None
+
+def replace_placeholders_with_regex(cover_letter, personal_info):
+    """Replace placeholders in cover letter using regex"""
+    personalized_letter = cover_letter
+    
+    for placeholder, value in personal_info.items():
+        # Use regex to replace the exact placeholder
+        pattern = r'\[' + re.escape(placeholder) + r'\]'
+        personalized_letter = re.sub(pattern, value, personalized_letter)
+    
+    return personalized_letter
 
 def main():
     """Main function to handle the Streamlit app logic"""
     # Initialize variables
     final_resume_text = ""
     final_job_description = ""
+    generated_cover_letter = None
+    personal_info = None
     
     # Streamlit UI
-    st.title("📄 CoverCraft - PDF Reader with Token Limits")
+    st.title("📄 CoverCraft - AI Cover Letter Generator")
 
     # Add a status indicator
     api_key = os.getenv("OPENAI_API_KEY")
     if not api_key:
         st.error("❌ OPENAI_API_KEY environment variable not set")
         st.info("Please set your OpenAI API key to use AI-generated cover letters")
-    elif "insufficient_quota" in str(st.session_state.get('last_error', '')):
-        st.warning("⚠️ OpenAI billing issue detected. Using mock cover letters.")
 
     # Display current token limits
     st.info(f"""
@@ -173,7 +222,7 @@ def main():
         st.info("📄 Please upload a resume (PDF format)")
 
     # Job description input
-    st.header("💼 Job Description")
+    st.header(" Job Description")
     job_description = st.text_area("Enter the job description", height=200)
     
     if st.button("📊 Analyze Job Description", type="primary"):
@@ -190,45 +239,87 @@ def main():
         else:
             st.error("❌ Please enter a job description first")
 
-    # Generate cover letter
-    st.header("✍️ Generate Cover Letter")
+    # Generate AI Cover Letter
+    st.header("🤖 Generate AI Cover Letter")
     if st.button("🚀 Generate Cover Letter", type="primary"):
-        if resume and job_description:
+        if final_resume_text and final_job_description:
             # Calculate total tokens
             tokenizer = initialize_tokenizer()
             total_tokens = count_tokens(final_resume_text, tokenizer) + count_tokens(final_job_description, tokenizer)
             
-            st.info(f"📊 Total tokens being sent to API: {total_tokens:,}")
+            st.info(f" Total tokens being sent to API: {total_tokens:,}")
             
             if total_tokens > TOTAL_SAFE_LIMIT:
                 st.error(f"❌ Total tokens ({total_tokens:,}) exceed safe limit ({TOTAL_SAFE_LIMIT:,}) for {MODEL_NAME}. Please reduce content.")
             else:
-                with st.spinner("Generating cover letter..."):
-                    cover_letter = generate_cover_letter(final_job_description, final_resume_text)
+                with st.spinner("Generating AI cover letter..."):
+                    generated_cover_letter = generate_ai_cover_letter(final_job_description, final_resume_text)
                     
-                    st.subheader("📝 Generated Cover Letter")
-                    st.markdown(cover_letter)
-                    
-                    # Add download button
-                    st.download_button(
-                        label="📥 Download Cover Letter",
-                        data=cover_letter,
-                        file_name="cover_letter.md",
-                        mime="text/markdown"
-                    )
+                    if generated_cover_letter:
+                        # Store in session state for later use
+                        st.session_state.generated_cover_letter = generated_cover_letter
+                        
+                        # Show success message only after generation
+                        st.success("✅ AI Cover Letter Generated Successfully!")
+                        
+                        # Show the generated cover letter
+                        st.subheader("📝 Generated Cover Letter (with placeholders)")
+                        st.markdown(generated_cover_letter)
+                        
+                        # Extract placeholders
+                        placeholders = extract_placeholders_from_text(generated_cover_letter)
+                        
+                        if placeholders:
+                            st.info(f"🔍 Found {len(placeholders)} placeholders to personalize: {', '.join(placeholders)}")
+                        else:
+                            st.info("✅ No placeholders found - cover letter is ready!")
+                    else:
+                        st.error("❌ Failed to generate cover letter. Please check your OpenAI API configuration.")
         else:
             st.error("Please upload a resume and analyze a job description first")
+
+    # Personalization Form (only show if cover letter is generated)
+    if 'generated_cover_letter' in st.session_state and st.session_state.generated_cover_letter:
+        st.header("👤 Personalize Your Cover Letter")
+        
+        # Extract placeholders from the generated cover letter
+        placeholders = extract_placeholders_from_text(st.session_state.generated_cover_letter)
+        
+        if placeholders:
+            personal_info = get_generic_personalization_form(placeholders)
+            
+            if personal_info:
+                # Replace placeholders with user data
+                personalized_letter = replace_placeholders_with_regex(st.session_state.generated_cover_letter, personal_info)
+                
+                st.subheader("🎉 Your Personalized Cover Letter")
+                st.markdown(personalized_letter)
+                
+                # Add download button
+                st.download_button(
+                    label="📥 Download Personalized Cover Letter",
+                    data=personalized_letter,
+                    file_name="personalized_cover_letter.md",
+                    mime="text/markdown"
+                )
+                
+                # Show what was replaced
+                with st.expander("🔍 Personalization Summary"):
+                    st.write("**Replaced placeholders:**")
+                    for placeholder, value in personal_info.items():
+                        st.write(f"- `[{placeholder}]` → `{value}`")
+        else:
+            st.info("✅ No placeholders found in the generated cover letter. It's ready to use!")
 
     # Footer
     st.markdown("---")
     st.markdown("""
     <div style='text-align: center; color: #666;'>
-        <p>CoverCraft - Smart PDF Processing with Token Management</p>
+        <p>CoverCraft - AI-Powered Cover Letter Generator</p>
         <p>Built with Streamlit, pdfplumber, and OpenAI</p>
     </div>
     """, unsafe_allow_html=True)
 
 # Run the main function
 if __name__ == "__main__":
-    main()
-
+    main() 

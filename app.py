@@ -1,11 +1,5 @@
-import os
 import streamlit as st
-from openai import OpenAI
-import pdfplumber
-import tiktoken
-import re
 import datetime
-import hashlib
 from constants import (
     RESUME_MAX_TOKENS, 
     JOB_DESC_MAX_TOKENS, 
@@ -30,8 +24,8 @@ from utils import (
     replace_placeholders,
     validate_file_type,
     format_token_count,
-    get_input_widget_type,
-    validate_required_fields
+    validate_required_fields,
+    convert_cover_letter_to_csv
 )
 from helpers import (
     check_openai_api_key,
@@ -40,13 +34,9 @@ from helpers import (
     clear_cover_letter_cache
 )
 
-# Initialize OpenAI client
-def initialize_openai_client():
-    client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-    return client
-
 def initialize_tokenizer():
     """Initialize tokenizer for token counting"""
+    import tiktoken
     return tiktoken.encoding_for_model(MODEL_NAME)
 
 def truncate_text_to_tokens(text: str, max_tokens: int, tokenizer) -> tuple[str, int]:
@@ -80,64 +70,6 @@ def format_token_info(text: str, max_tokens: int, text_type: str) -> str:
         st.warning(f"⚠️ {text_type} exceeded {max_tokens} tokens and has been truncated.")
     
     return truncated_text
-
-@st.cache_data(ttl=3600)  # Cache for 1 hour
-def generate_cover_letter_prompt(job_description, resume_text):
-    """Abstract method to generate the prompt for cover letter generation (cached)"""
-    prompt = f"""
-    Write a professional cover letter for a job application. Use the following information:
-    
-    Resume: {resume_text}
-    Job Description: {job_description}
-    
-    Requirements:
-    1. Write a professional cover letter in business letter format
-    2. Use placeholders in square brackets [] for personal information that needs to be filled later
-    3. Make the content relevant to the resume and job description
-    4. Keep it professional and well-structured
-    5. Include proper business letter formatting with header and signature
-    6. Use any placeholders you think are appropriate for personalization
-    """
-    return prompt
-
-@st.cache_data(ttl=3600)  # Cache for 1 hour
-def call_openai_api(job_description, resume_text):
-    """Cached OpenAI API call - this is the expensive operation we want to cache"""
-    client = initialize_openai_client()
-    
-    # Generate prompt (this will also be cached)
-    prompt = generate_cover_letter_prompt(job_description, resume_text)
-    
-    try:
-        response = client.chat.completions.create(
-            model=MODEL_NAME,
-            messages=[
-                {"role": "system", "content": "You are a professional cover letter writer. Use placeholders in square brackets for any personal information that should be customized."},
-                {"role": "user", "content": prompt}
-            ],
-            max_tokens=1500
-        )
-        return response.choices[0].message.content
-    except Exception as e:
-        return f"ERROR: {str(e)}"
-
-def generate_ai_cover_letter(job_description, resume_text):
-    """Generate AI cover letter with placeholders for personalization"""
-    # Use the cached API call
-    result = call_openai_api(job_description, resume_text)
-    
-    if result.startswith("ERROR:"):
-        st.error(f"❌ OpenAI API Error: {result[7:]}")  # Remove "ERROR: " prefix
-        return None
-    
-    return result
-
-@st.cache_data(ttl=3600)  # Cache for 1 hour
-def extract_placeholders_from_text(text):
-    """Extract all placeholders in square brackets from the generated cover letter"""
-    placeholder_pattern = r'\[([^\]]+)\]'
-    placeholders = re.findall(placeholder_pattern, text)
-    return list(set(placeholders))  # Remove duplicates
 
 def get_generic_personalization_form(placeholders: list[str]) -> dict[str, str] | None:
     """Display a generic form for any placeholders found in the AI response"""
@@ -196,10 +128,6 @@ def manage_session_state():
         st.session_state.resume_hash = None
     if 'job_desc_hash' not in st.session_state:
         st.session_state.job_desc_hash = None
-
-def get_content_hash(content):
-    """Generate a hash for content to detect changes"""
-    return hashlib.md5(content.encode()).hexdigest()
 
 def main():
     """Main function to handle the Streamlit app logic"""
@@ -368,10 +296,13 @@ def main():
                 st.subheader("🎉 Your Personalized Cover Letter")
                 st.markdown(personalized_letter)
                 
+                # Convert to CSV format for download
+                csv_data = convert_cover_letter_to_csv(personalized_letter, personal_info)
+                
                 # Add download button
                 st.download_button(
-                    label="📥 Download Personalized Cover Letter",
-                    data=personalized_letter,
+                    label="📥 Download Personalized Cover Letter (CSV)",
+                    data=csv_data,
                     file_name=COVER_LETTER_FILENAME,
                     mime=COVER_LETTER_MIME_TYPE
                 )

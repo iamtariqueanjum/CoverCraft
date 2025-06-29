@@ -112,4 +112,32 @@ def validate_required_fields(filled_values: Dict[str, str], required_placeholder
         if not filled_values.get(placeholder, '').strip():
             empty_fields.append(placeholder)
     
-    return len(empty_fields) == 0, empty_fields 
+    return len(empty_fields) == 0, empty_fields
+
+def convert_cover_letter_to_csv(cover_letter: str, personal_info: Dict[str, str]) -> str:
+    """Convert cover letter and personal info to CSV format."""
+    import csv
+    import io
+    
+    # Create CSV content
+    output = io.StringIO()
+    writer = csv.writer(output)
+    
+    # Add headers
+    writer.writerow(['Field', 'Value'])
+    
+    # Add personal information
+    for placeholder, value in personal_info.items():
+        writer.writerow([f'Personal Info - {placeholder}', value])
+    
+    # Add separator
+    writer.writerow([])
+    writer.writerow(['Cover Letter Content'])
+    
+    # Add cover letter content (split by lines to handle line breaks)
+    lines = cover_letter.split('\n')
+    for line in lines:
+        if line.strip():  # Only add non-empty lines
+            writer.writerow([line])
+    
+    return output.getvalue() 

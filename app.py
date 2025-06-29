@@ -5,12 +5,40 @@ import pdfplumber
 import tiktoken
 import re
 import datetime
-
-# Token limits configuration - can be easily modified here
-RESUME_MAX_TOKENS = 8000  # 5K-10K range as requested
-JOB_DESC_MAX_TOKENS = 3000  # 2K tokens for description as requested
-TOTAL_SAFE_LIMIT = 16000  # Safe limit for GPT-3.5-turbo (16,385 max)
-MODEL_NAME = "gpt-3.5-turbo"  # OpenAI model to use
+import hashlib
+from constants import (
+    RESUME_MAX_TOKENS, 
+    JOB_DESC_MAX_TOKENS, 
+    TOTAL_SAFE_LIMIT, 
+    MODEL_NAME,
+    ERROR_MESSAGES,
+    SUCCESS_MESSAGES,
+    INFO_MESSAGES,
+    TEXT_AREA_MIN_HEIGHT,
+    RESUME_TEXT_AREA_HEIGHT,
+    JOB_DESC_TEXT_AREA_HEIGHT,
+    COVER_LETTER_FILENAME,
+    COVER_LETTER_MIME_TYPE
+)
+from utils import (
+    count_tokens,
+    extract_text_from_pdf,
+    calculate_content_hash,
+    extract_placeholders,
+    determine_input_type,
+    get_placeholder_default,
+    replace_placeholders,
+    validate_file_type,
+    format_token_count,
+    get_input_widget_type,
+    validate_required_fields
+)
+from helpers import (
+    check_openai_api_key,
+    validate_token_limits,
+    get_cached_cover_letter,
+    clear_cover_letter_cache
+)
 
 # Initialize OpenAI client
 def initialize_openai_client():
@@ -18,29 +46,10 @@ def initialize_openai_client():
     return client
 
 def initialize_tokenizer():
-    # Initialize tokenizer
-    encoding = tiktoken.encoding_for_model(MODEL_NAME)
-    return encoding
+    """Initialize tokenizer for token counting"""
+    return tiktoken.encoding_for_model(MODEL_NAME)
 
-def count_tokens(text, tokenizer):
-    """Count the number of tokens in a text string"""
-    return len(tokenizer.encode(text))
-
-def extract_text_from_pdf(pdf_file):
-    """Extract text from PDF file using pdfplumber"""
-    try:
-        with pdfplumber.open(pdf_file) as pdf:
-            text = ""
-            for page in pdf.pages:
-                page_text = page.extract_text()
-                if page_text:
-                    text += page_text + "\n"
-        return text.strip()
-    except Exception as e:
-        st.error(f"Error reading PDF: {str(e)}")
-        return "Error in extracting text from PDF"
-
-def truncate_text_to_tokens(text, max_tokens, tokenizer):
+def truncate_text_to_tokens(text: str, max_tokens: int, tokenizer) -> tuple[str, int]:
     """Truncate text to a maximum number of tokens"""
     tokens = tokenizer.encode(text)
     if len(tokens) <= max_tokens:
@@ -50,10 +59,10 @@ def truncate_text_to_tokens(text, max_tokens, tokenizer):
     truncated_text = tokenizer.decode(truncated_tokens)
     return truncated_text, max_tokens
 
-def format_token_info(text, max_tokens, text_type):
+def format_token_info(text: str, max_tokens: int, text_type: str) -> str:
     """Format token information for display"""
     tokenizer = initialize_tokenizer()  
-    token_count = count_tokens(text, tokenizer)
+    token_count = count_tokens(text)
     truncated_text, final_token_count = truncate_text_to_tokens(text, max_tokens, tokenizer)
     
     col1, col2, col3 = st.columns(3)
@@ -72,8 +81,9 @@ def format_token_info(text, max_tokens, text_type):
     
     return truncated_text
 
+@st.cache_data(ttl=3600)  # Cache for 1 hour
 def generate_cover_letter_prompt(job_description, resume_text):
-    """Abstract method to generate the prompt for cover letter generation"""
+    """Abstract method to generate the prompt for cover letter generation (cached)"""
     prompt = f"""
     Write a professional cover letter for a job application. Use the following information:
     
@@ -90,11 +100,12 @@ def generate_cover_letter_prompt(job_description, resume_text):
     """
     return prompt
 
-def generate_ai_cover_letter(job_description, resume_text):
-    """Generate AI cover letter with placeholders for personalization"""
+@st.cache_data(ttl=3600)  # Cache for 1 hour
+def call_openai_api(job_description, resume_text):
+    """Cached OpenAI API call - this is the expensive operation we want to cache"""
     client = initialize_openai_client()
     
-    # Use the abstract prompt method
+    # Generate prompt (this will also be cached)
     prompt = generate_cover_letter_prompt(job_description, resume_text)
     
     try:
@@ -108,16 +119,27 @@ def generate_ai_cover_letter(job_description, resume_text):
         )
         return response.choices[0].message.content
     except Exception as e:
-        st.error(f"❌ OpenAI API Error: {str(e)}")
-        return None
+        return f"ERROR: {str(e)}"
 
+def generate_ai_cover_letter(job_description, resume_text):
+    """Generate AI cover letter with placeholders for personalization"""
+    # Use the cached API call
+    result = call_openai_api(job_description, resume_text)
+    
+    if result.startswith("ERROR:"):
+        st.error(f"❌ OpenAI API Error: {result[7:]}")  # Remove "ERROR: " prefix
+        return None
+    
+    return result
+
+@st.cache_data(ttl=3600)  # Cache for 1 hour
 def extract_placeholders_from_text(text):
     """Extract all placeholders in square brackets from the generated cover letter"""
     placeholder_pattern = r'\[([^\]]+)\]'
     placeholders = re.findall(placeholder_pattern, text)
     return list(set(placeholders))  # Remove duplicates
 
-def get_generic_personalization_form(placeholders):
+def get_generic_personalization_form(placeholders: list[str]) -> dict[str, str] | None:
     """Display a generic form for any placeholders found in the AI response"""
     st.subheader("👤 Personalize Your Cover Letter")
     st.info(f"Please fill in the following {len(placeholders)} fields to personalize your cover letter.")
@@ -126,67 +148,84 @@ def get_generic_personalization_form(placeholders):
     
     with st.form("personalization_form"):
         # Create form fields dynamically based on extracted placeholders
-        for i, placeholder in enumerate(placeholders):
-            # Determine input type based on placeholder content
-            if any(keyword in placeholder.lower() for keyword in ['email', 'mail']):
-                value = st.text_input(f"{placeholder}", placeholder="example@email.com")
-            elif any(keyword in placeholder.lower() for keyword in ['phone', 'mobile', 'tel']):
-                value = st.text_input(f"{placeholder}", placeholder="(123) 456-7890")
-            elif any(keyword in placeholder.lower() for keyword in ['address', 'street']):
-                value = st.text_area(f"{placeholder}", placeholder="123 Main Street", height=60)
-            elif any(keyword in placeholder.lower() for keyword in ['date']):
+        for placeholder in placeholders:
+            input_type = determine_input_type(placeholder)
+            default_value = get_placeholder_default(placeholder)
+            
+            if input_type == 'email':
+                value = st.text_input(f"{placeholder}", placeholder=default_value)
+            elif input_type == 'phone':
+                value = st.text_input(f"{placeholder}", placeholder=default_value)
+            elif input_type == 'address':
+                value = st.text_area(f"{placeholder}", placeholder=default_value, height=TEXT_AREA_MIN_HEIGHT)
+            elif input_type == 'date':
                 # Auto-fill current date
                 value = datetime.datetime.now().strftime("%B %d, %Y")
                 st.text_input(f"{placeholder}", value=value, disabled=True)
-            elif any(keyword in placeholder.lower() for keyword in ['name']):
-                value = st.text_input(f"{placeholder}", placeholder="John Doe")
+            elif input_type == 'name':
+                value = st.text_input(f"{placeholder}", placeholder=default_value)
             else:
                 # Generic text input for unknown placeholders
-                value = st.text_input(f"{placeholder}", placeholder="Enter value")
+                value = st.text_input(f"{placeholder}", placeholder=default_value)
             
             personal_info[placeholder] = value
         
+        # Submit button must be inside the form
         submitted = st.form_submit_button("✅ Personalize Cover Letter")
-        
-        if submitted:
-            # Validate that all fields are filled
-            empty_fields = [placeholder for placeholder, value in personal_info.items() if not value.strip()]
-            if empty_fields:
-                st.error(f"❌ Please fill in all fields: {', '.join(empty_fields)}")
-                return None
-            else:
-                st.success("✅ Personal information saved successfully!")
-                return personal_info
+    
+    # Handle form submission outside the form context
+    if submitted:
+        # Validate that all fields are filled
+        is_valid, empty_fields = validate_required_fields(personal_info, placeholders)
+        if not is_valid:
+            st.error(ERROR_MESSAGES["empty_fields"].format(', '.join(empty_fields)))
+            return None
+        else:
+            st.success(SUCCESS_MESSAGES["personal_info_saved"])
+            return personal_info
     
     return None
 
-def replace_placeholders_with_regex(cover_letter, personal_info):
-    """Replace placeholders in cover letter using regex"""
-    personalized_letter = cover_letter
-    
-    for placeholder, value in personal_info.items():
-        # Use regex to replace the exact placeholder
-        pattern = r'\[' + re.escape(placeholder) + r'\]'
-        personalized_letter = re.sub(pattern, value, personalized_letter)
-    
-    return personalized_letter
+def manage_session_state():
+    """Initialize and manage session state variables"""
+    if 'generated_cover_letter' not in st.session_state:
+        st.session_state.generated_cover_letter = None
+    if 'personal_info' not in st.session_state:
+        st.session_state.personal_info = None
+    if 'resume_hash' not in st.session_state:
+        st.session_state.resume_hash = None
+    if 'job_desc_hash' not in st.session_state:
+        st.session_state.job_desc_hash = None
+
+def get_content_hash(content):
+    """Generate a hash for content to detect changes"""
+    return hashlib.md5(content.encode()).hexdigest()
 
 def main():
     """Main function to handle the Streamlit app logic"""
-    # Initialize variables
-    final_resume_text = ""
-    final_job_description = ""
-    generated_cover_letter = None
-    personal_info = None
+    # Initialize session state
+    manage_session_state()
     
     # Streamlit UI
     st.title("📄 CoverCraft - AI Cover Letter Generator")
 
+    # Add cache management in sidebar
+    with st.sidebar:
+        st.header("⚙️ Cache Management")
+        if st.button("🗑️ Clear Cache", help="Clear all cached data"):
+            clear_cover_letter_cache()
+            st.cache_data.clear()
+            st.session_state.generated_cover_letter = None
+            st.session_state.personal_info = None
+            st.session_state.resume_hash = None
+            st.session_state.job_desc_hash = None
+            st.success(SUCCESS_MESSAGES["cache_cleared"])
+        
+        st.info(INFO_MESSAGES["cache_help"])
+
     # Add a status indicator
-    api_key = os.getenv("OPENAI_API_KEY")
-    if not api_key:
-        st.error("❌ OPENAI_API_KEY environment variable not set")
-        st.info("Please set your OpenAI API key to use AI-generated cover letters")
+    if not check_openai_api_key():
+        return
 
     # Display current token limits
     st.info(f"""
@@ -203,11 +242,19 @@ def main():
 
     resume_text = ""
     if resume:
+        if not validate_file_type(resume.name):
+            st.error(f"❌ Unsupported file type. Please upload a PDF file.")
+            return
+            
         with st.spinner("Extracting text from PDF..."):
-            resume_text = extract_text_from_pdf(resume)
+            try:
+                resume_text = extract_text_from_pdf(resume)
+            except Exception as e:
+                st.error(ERROR_MESSAGES["pdf_error"].format(str(e)))
+                return
         
         if resume_text:
-            st.success("✅ Resume uploaded and text extracted successfully")
+            st.success(SUCCESS_MESSAGES["resume_uploaded"])
             
             # Show token information for resume
             st.subheader("📊 Resume Token Analysis")
@@ -215,82 +262,108 @@ def main():
             
             # Show extracted text in expander
             with st.expander("📄 View Extracted Resume Text"):
-                st.text_area("Resume Text", final_resume_text, height=300, disabled=True)
+                st.text_area("Resume Text", final_resume_text, height=RESUME_TEXT_AREA_HEIGHT, disabled=True)
         else:
-            st.error("❌ Failed to extract text from PDF")
+            st.error(ERROR_MESSAGES["pdf_extraction_failed"])
     else:
-        st.info("📄 Please upload a resume (PDF format)")
+        final_resume_text = ""
+        st.info(INFO_MESSAGES["upload_resume"])
 
     # Job description input
-    st.header(" Job Description")
-    job_description = st.text_area("Enter the job description", height=200)
+    st.header("📝 Job Description")
+    job_description = st.text_area("Enter the job description", height=JOB_DESC_TEXT_AREA_HEIGHT)
     
-    if st.button("📊 Analyze Job Description", type="primary"):
-        if job_description:
-            # Show token information for job description
-            st.success("✅ Job description uploaded and text extracted successfully")
-            
-            st.subheader("📊 Job Description Token Analysis")
-            final_job_description = format_token_info(job_description, JOB_DESC_MAX_TOKENS, "Job Description")
-            
-            # Show final job description
-            with st.expander("📄 View Final Job Description"):
-                st.text_area("Job Description", final_job_description, height=200, disabled=True)
-        else:
-            st.error("❌ Please enter a job description first")
+    # Automatically process job description when entered
+    if job_description:
+        st.success(SUCCESS_MESSAGES["job_desc_entered"])
+        
+        st.subheader("📊 Job Description Token Analysis")
+        final_job_description = format_token_info(job_description, JOB_DESC_MAX_TOKENS, "Job Description")
+        
+        # Show final job description
+        with st.expander("📄 View Final Job Description"):
+            st.text_area("Job Description", final_job_description, height=JOB_DESC_TEXT_AREA_HEIGHT, disabled=True)
+    else:
+        final_job_description = ""
+        st.info(INFO_MESSAGES["enter_job_desc"])
+
+    # Check if content has changed
+    current_resume_hash = calculate_content_hash(final_resume_text, "") if final_resume_text else None
+    current_job_desc_hash = calculate_content_hash("", final_job_description) if final_job_description else None
+    
+    # Clear cached cover letter if content has changed
+    if (current_resume_hash != st.session_state.resume_hash or 
+        current_job_desc_hash != st.session_state.job_desc_hash):
+        st.session_state.generated_cover_letter = None
+        st.session_state.personal_info = None
+        st.session_state.resume_hash = current_resume_hash
+        st.session_state.job_desc_hash = current_job_desc_hash
 
     # Generate AI Cover Letter
     st.header("🤖 Generate AI Cover Letter")
+    
+    # Show cached status if available
+    if st.session_state.generated_cover_letter:
+        st.info(INFO_MESSAGES["using_cached"])
+    
     if st.button("🚀 Generate Cover Letter", type="primary"):
         if final_resume_text and final_job_description:
             # Calculate total tokens
-            tokenizer = initialize_tokenizer()
-            total_tokens = count_tokens(final_resume_text, tokenizer) + count_tokens(final_job_description, tokenizer)
+            total_tokens = count_tokens(final_resume_text) + count_tokens(final_job_description)
             
-            st.info(f" Total tokens being sent to API: {total_tokens:,}")
+            st.info(f"📊 Total tokens being sent to API: {format_token_count(total_tokens)}")
             
-            if total_tokens > TOTAL_SAFE_LIMIT:
-                st.error(f"❌ Total tokens ({total_tokens:,}) exceed safe limit ({TOTAL_SAFE_LIMIT:,}) for {MODEL_NAME}. Please reduce content.")
+            # Validate token limits
+            is_valid, exceeded_content = validate_token_limits(final_resume_text, final_job_description)
+            if not is_valid:
+                st.error(ERROR_MESSAGES["token_limit_exceeded"].format(
+                    format_token_count(total_tokens), format_token_count(TOTAL_SAFE_LIMIT), MODEL_NAME
+                ))
             else:
                 with st.spinner("Generating AI cover letter..."):
-                    generated_cover_letter = generate_ai_cover_letter(final_job_description, final_resume_text)
+                    generated_cover_letter = get_cached_cover_letter(final_resume_text, final_job_description)
                     
                     if generated_cover_letter:
                         # Store in session state for later use
                         st.session_state.generated_cover_letter = generated_cover_letter
                         
                         # Show success message only after generation
-                        st.success("✅ AI Cover Letter Generated Successfully!")
+                        st.success(SUCCESS_MESSAGES["cover_letter_generated"])
                         
                         # Show the generated cover letter
                         st.subheader("📝 Generated Cover Letter (with placeholders)")
                         st.markdown(generated_cover_letter)
                         
                         # Extract placeholders
-                        placeholders = extract_placeholders_from_text(generated_cover_letter)
+                        placeholders = extract_placeholders(generated_cover_letter)
                         
                         if placeholders:
-                            st.info(f"🔍 Found {len(placeholders)} placeholders to personalize: {', '.join(placeholders)}")
+                            st.info(INFO_MESSAGES["found_placeholders"].format(len(placeholders), ', '.join(placeholders)))
                         else:
-                            st.info("✅ No placeholders found - cover letter is ready!")
+                            st.info(ERROR_MESSAGES["no_placeholders"])
                     else:
-                        st.error("❌ Failed to generate cover letter. Please check your OpenAI API configuration.")
+                        st.error(ERROR_MESSAGES["generation_failed"])
         else:
-            st.error("Please upload a resume and analyze a job description first")
+            if not final_resume_text:
+                st.error(ERROR_MESSAGES["missing_resume"])
+            elif not final_job_description:
+                st.error(ERROR_MESSAGES["missing_job_desc"])
+            else:
+                st.error(ERROR_MESSAGES["missing_both"])
 
     # Personalization Form (only show if cover letter is generated)
-    if 'generated_cover_letter' in st.session_state and st.session_state.generated_cover_letter:
+    if st.session_state.generated_cover_letter:
         st.header("👤 Personalize Your Cover Letter")
         
         # Extract placeholders from the generated cover letter
-        placeholders = extract_placeholders_from_text(st.session_state.generated_cover_letter)
+        placeholders = extract_placeholders(st.session_state.generated_cover_letter)
         
         if placeholders:
             personal_info = get_generic_personalization_form(placeholders)
             
             if personal_info:
                 # Replace placeholders with user data
-                personalized_letter = replace_placeholders_with_regex(st.session_state.generated_cover_letter, personal_info)
+                personalized_letter = replace_placeholders(st.session_state.generated_cover_letter, personal_info)
                 
                 st.subheader("🎉 Your Personalized Cover Letter")
                 st.markdown(personalized_letter)
@@ -299,8 +372,8 @@ def main():
                 st.download_button(
                     label="📥 Download Personalized Cover Letter",
                     data=personalized_letter,
-                    file_name="personalized_cover_letter.md",
-                    mime="text/markdown"
+                    file_name=COVER_LETTER_FILENAME,
+                    mime=COVER_LETTER_MIME_TYPE
                 )
                 
                 # Show what was replaced
@@ -309,7 +382,7 @@ def main():
                     for placeholder, value in personal_info.items():
                         st.write(f"- `[{placeholder}]` → `{value}`")
         else:
-            st.info("✅ No placeholders found in the generated cover letter. It's ready to use!")
+            st.info(ERROR_MESSAGES["no_placeholders_in_letter"])
 
     # Footer
     st.markdown("---")
